@@ -11,6 +11,12 @@
 #include "common/init.h"
 #include "common/assemble.h"
 #include "common/cuFormatConversion.h"
+#ifndef BICGSTAB_SUMMATION_BLOCK_SIZE
+#define BICGSTAB_SUMMATION_BLOCK_SIZE 256
+#endif
+#ifndef BICGSTAB_THREADS_PER_BLOCK
+#define BICGSTAB_THREADS_PER_BLOCK 256
+#endif
 #include "bicgstab/bicgstab_solver.h"
 
 using namespace std;

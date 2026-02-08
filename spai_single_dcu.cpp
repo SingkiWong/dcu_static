@@ -29,6 +29,14 @@ using namespace std;
     } \
 } while (0)
 
+#define CHECK_HIP_ERROR(call) do { \
+    hipError_t err = (call); \
+    if (err != hipSuccess) { \
+        printf("HIP error at %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(err)); \
+        exit(EXIT_FAILURE); \
+    } \
+} while (0)
+
 template<unsigned int N2SIZE>
 __global__ void cuComputeN2MAXwithSparityofA(int *aPtr, int nCol, int *n2max) {
 

@@ -48,6 +48,15 @@ LIBRARIES += -lhipsparse
 LIBRARIES += -lm
 LIBRARIES += -fopenmp
 
+# MPI支持（可选）
+ifdef USE_MPI
+    MPI_HOME ?= /usr/lib/x86_64-linux-gnu/openmpi
+    INCLUDES += -I$(MPI_HOME)/include
+    LDFLAGS += -L$(MPI_HOME)/lib
+    LIBRARIES += -lmpi
+    HIPCC_FLAGS += -DUSE_MPI
+endif
+
 ################################################################################
 # 目标规则
 ################################################################################

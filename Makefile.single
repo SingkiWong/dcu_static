@@ -1,0 +1,172 @@
+################################################################################
+#
+# Makefile for DCU/ROCm Platform - Static SPAI Preconditioner
+#
+# Target: Single DCU device
+# Compiler: hipcc (ROCm HIP compiler)
+# Libraries: rocBLAS, rocSPARSE, OpenMP
+#
+################################################################################
+
+# ROCm/HIP Path Configuration
+ROCM_PATH ?= /opt/rocm
+HIP_PATH ?= $(ROCM_PATH)
+
+# Compiler Configuration
+CXX := hipcc
+HOST_CXX := g++
+
+# Target Architecture (gfx906=MI50/MI60, gfx908=MI100, gfx90a=MI210/MI250)
+# 根据您的DCU型号选择正确的架构：
+# - 海光DCU Z100: gfx906
+# - AMD MI100: gfx908
+# - AMD MI210/MI250: gfx90a
+GPU_ARCH ?= gfx906
+
+# Compiler Flags
+HIPCC_FLAGS := -O3 -std=c++14
+HIPCC_FLAGS += --offload-arch=$(GPU_ARCH)
+HIPCC_FLAGS += -D__HIP_PLATFORM_AMD__
+HIPCC_FLAGS += -fPIC
+
+# OpenMP Support
+HIPCC_FLAGS += -fopenmp
+
+# Warning Flags
+HIPCC_FLAGS += -Wall -Wno-unused-result
+
+# Include Paths
+INCLUDES := -I./common
+INCLUDES += -I$(ROCM_PATH)/include
+INCLUDES += -I$(HIP_PATH)/include
+
+# Library Paths and Libraries
+LDFLAGS := -L$(ROCM_PATH)/lib
+LDFLAGS += -L$(HIP_PATH)/lib
+
+LIBRARIES := -lhipblas
+LIBRARIES += -lhipsparse
+LIBRARIES += -lm
+LIBRARIES += -fopenmp
+
+# Debug Build Configuration
+ifdef DEBUG
+    HIPCC_FLAGS += -g -G
+    HIPCC_FLAGS += -DDEBUG
+    BUILD_TYPE := debug
+else
+    BUILD_TYPE := release
+endif
+
+################################################################################
+# Target Rules
+################################################################################
+
+.PHONY: all clean help test info
+
+# Default Target
+all: spai_single_dcu
+
+# Main Executable
+spai_single_dcu: spai_single_dcu.cpp
+	@echo "=========================================="
+	@echo "编译 DCU 版本 Static SPAI..."
+	@echo "架构: $(GPU_ARCH)"
+	@echo "编译器: $(CXX)"
+	@echo "=========================================="
+	$(CXX) $(HIPCC_FLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(LIBRARIES)
+	@echo "=========================================="
+	@echo "编译成功！可执行文件: $@"
+	@echo "=========================================="
+
+# Original Version (for comparison)
+DtestStaticSPAINew30: DtestStaticSPAINew30.cpp
+	@echo "编译原始版本..."
+	$(CXX) $(HIPCC_FLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(LIBRARIES)
+
+# Debug Build
+debug:
+	$(MAKE) DEBUG=1
+
+# Clean Build Artifacts
+clean:
+	@echo "清理编译文件..."
+	rm -f spai_single_dcu
+	rm -f DtestStaticSPAINew30
+	rm -f *.o
+	@echo "清理完成"
+
+# Display Compiler and Library Information
+info:
+	@echo "=========================================="
+	@echo "DCU/ROCm 编译环境信息"
+	@echo "=========================================="
+	@echo "ROCm路径: $(ROCM_PATH)"
+	@echo "HIP路径: $(HIP_PATH)"
+	@echo "编译器: $(shell $(CXX) --version | head -n1)"
+	@echo "目标架构: $(GPU_ARCH)"
+	@echo "编译选项: $(HIPCC_FLAGS)"
+	@echo "链接库: $(LIBRARIES)"
+	@echo "=========================================="
+	@echo "可用DCU设备:"
+	@rocm-smi --showproductname || echo "  无法查询设备信息"
+	@echo "=========================================="
+
+# Run Test with Sample Matrix
+test: spai_single_dcu
+	@echo "=========================================="
+	@echo "运行测试 - Static SPAI Preconditioner"
+	@echo "=========================================="
+	@if [ -f "circuit_2.mtx" ]; then \
+		echo "circuit_2.mtx" | ./spai_single_dcu; \
+	elif [ -f "fill_3elt.mtx" ]; then \
+		echo "fill_3elt.mtx" | ./spai_single_dcu; \
+	else \
+		echo "错误: 未找到测试矩阵文件 (circuit_2.mtx 或 fill_3elt.mtx)"; \
+		exit 1; \
+	fi
+
+# Display Help Information
+help:
+	@echo "=========================================="
+	@echo "DCU Static SPAI Makefile 使用说明"
+	@echo "=========================================="
+	@echo "可用目标:"
+	@echo "  make              - 编译修复版本 (默认)"
+	@echo "  make all          - 同上"
+	@echo "  make debug        - 编译调试版本"
+	@echo "  make clean        - 清理编译文件"
+	@echo "  make info         - 显示编译环境信息"
+	@echo "  make test         - 编译并运行测试"
+	@echo "  make help         - 显示此帮助信息"
+	@echo ""
+	@echo "编译选项:"
+	@echo "  GPU_ARCH=gfx906   - 指定GPU架构 (默认: gfx906)"
+	@echo "  DEBUG=1           - 启用调试模式"
+	@echo "  ROCM_PATH=/path   - 指定ROCm安装路径"
+	@echo ""
+	@echo "示例:"
+	@echo "  make GPU_ARCH=gfx908              # MI100架构"
+	@echo "  make GPU_ARCH=gfx90a              # MI210/MI250架构"
+	@echo "  make DEBUG=1                      # 调试版本"
+	@echo "  make ROCM_PATH=/opt/rocm-5.4.0   # 指定ROCm路径"
+	@echo "=========================================="
+
+################################################################################
+# Architecture Selection Guide
+################################################################################
+#
+# 海光 DCU:
+#   - Z100: gfx906
+#
+# AMD Instinct:
+#   - MI50/MI60: gfx906
+#   - MI100: gfx908
+#   - MI210: gfx90a
+#   - MI250/MI250X: gfx90a
+#
+# AMD Radeon:
+#   - Radeon VII: gfx906
+#   - RX 6800/6900: gfx1030
+#
+################################################################################

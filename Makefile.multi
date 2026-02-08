@@ -1,0 +1,224 @@
+################################################################################
+#
+# Makefile for Multi-DCU Static SPAI Preconditioner
+#
+# 多DCU并行版本编译配置
+#
+################################################################################
+
+# ROCm配置
+ROCM_PATH ?= /opt/rocm
+HIP_PATH ?= $(ROCM_PATH)
+
+# 编译器
+CXX := hipcc
+HOST_CXX := g++
+
+# GPU架构（根据您的DCU型号选择）
+GPU_ARCH ?= gfx906
+
+# 编译选项
+HIPCC_FLAGS := -O3 -std=c++14
+HIPCC_FLAGS += --offload-arch=$(GPU_ARCH)
+HIPCC_FLAGS += -D__HIP_PLATFORM_AMD__
+HIPCC_FLAGS += -fPIC
+
+# OpenMP支持（多DCU必需）
+HIPCC_FLAGS += -fopenmp
+
+# 调试选项
+ifdef DEBUG
+    HIPCC_FLAGS += -g -G
+    HIPCC_FLAGS += -DDEBUG
+    HIPCC_FLAGS += -DMULTI_DCU_DEBUG  # 启用多DCU调试信息
+endif
+
+# 包含路径
+INCLUDES := -I./common
+INCLUDES += -I$(ROCM_PATH)/include
+INCLUDES += -I$(HIP_PATH)/include
+
+# 链接库
+LDFLAGS := -L$(ROCM_PATH)/lib
+LDFLAGS += -L$(HIP_PATH)/lib
+
+LIBRARIES := -lhipblas
+LIBRARIES += -lhipsparse
+LIBRARIES += -lm
+LIBRARIES += -fopenmp
+
+################################################################################
+# 目标规则
+################################################################################
+
+.PHONY: all clean info test help single multi
+
+# 默认构建多DCU版本
+all: multi
+
+# 多DCU版本
+multi: spai_multi_dcu
+
+spai_multi_dcu: spai_multi_dcu.cpp
+	@echo "=========================================="
+	@echo "编译多DCU版本 Static SPAI"
+	@echo "架构: $(GPU_ARCH)"
+	@echo "编译器: $(CXX)"
+	@echo "OpenMP: 已启用"
+	@echo "=========================================="
+	$(CXX) $(HIPCC_FLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(LIBRARIES)
+	@echo "=========================================="
+	@echo "✓ 多DCU版本编译成功: $@"
+	@echo "=========================================="
+
+# 单DCU版本（对比用）
+single: spai_single_dcu
+
+spai_single_dcu: spai_single_dcu.cpp
+	@echo "编译单DCU版本（对比用）..."
+	$(CXX) $(HIPCC_FLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(LIBRARIES)
+	@echo "✓ 单DCU版本编译成功"
+
+# 同时编译单DCU和多DCU版本
+both: single multi
+
+# 调试版本
+debug:
+	$(MAKE) DEBUG=1
+
+# 清理
+clean:
+	@echo "清理编译文件..."
+	rm -f spai_multi_dcu
+	rm -f spai_single_dcu
+	rm -f *.o
+	@echo "清理完成"
+
+# 显示环境信息
+info:
+	@echo "=========================================="
+	@echo "多DCU编译环境信息"
+	@echo "=========================================="
+	@echo "ROCm路径: $(ROCM_PATH)"
+	@echo "HIP路径: $(HIP_PATH)"
+	@echo "编译器: $(shell $(CXX) --version | head -n1)"
+	@echo "目标架构: $(GPU_ARCH)"
+	@echo "编译选项: $(HIPCC_FLAGS)"
+	@echo "链接库: $(LIBRARIES)"
+	@echo "=========================================="
+	@echo "可用DCU设备:"
+	@rocm-smi --showproductname 2>/dev/null || echo "  无法查询设备信息"
+	@echo "=========================================="
+	@echo "OpenMP线程数:"
+	@echo "  OMP_NUM_THREADS = $${OMP_NUM_THREADS:-未设置（将使用默认值）}"
+	@echo "=========================================="
+
+# 性能测试：对比不同DCU数量
+test: spai_multi_dcu
+	@echo "=========================================="
+	@echo "多DCU性能测试"
+	@echo "=========================================="
+	@if [ ! -f "circuit_2.mtx" ]; then \
+		echo "错误: 未找到测试矩阵 circuit_2.mtx"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "--- 测试 1个DCU ---"
+	@echo "circuit_2.mtx" | ./spai_multi_dcu 1 | grep -E "Time|DCU|计算"
+	@echo ""
+	@echo "--- 测试 2个DCU ---"
+	@echo "circuit_2.mtx" | ./spai_multi_dcu 2 | grep -E "Time|DCU|计算"
+	@echo ""
+	@echo "--- 测试 4个DCU ---"
+	@echo "circuit_2.mtx" | ./spai_multi_dcu 4 | grep -E "Time|DCU|计算"
+	@echo ""
+	@echo "=========================================="
+
+# 验证正确性：对比单DCU和多DCU结果
+verify: both
+	@echo "=========================================="
+	@echo "验证多DCU计算正确性"
+	@echo "=========================================="
+	@if [ ! -f "circuit_2.mtx" ]; then \
+		echo "错误: 未找到测试矩阵 circuit_2.mtx"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "运行单DCU版本..."
+	@echo "circuit_2.mtx" | ./spai_single_dcu > single_output.txt 2>&1
+	@echo "运行多DCU版本 (2个DCU)..."
+	@echo "circuit_2.mtx" | ./spai_multi_dcu 2 > multi_output.txt 2>&1
+	@echo ""
+	@echo "对比结果..."
+	@diff single_output.txt multi_output.txt > /dev/null 2>&1 && \
+		echo "✓ 结果一致！多DCU实现正确。" || \
+		echo "⚠ 结果不同，请检查实现。详见 single_output.txt 和 multi_output.txt"
+	@echo "=========================================="
+
+# 帮助信息
+help:
+	@echo "=========================================="
+	@echo "多DCU Static SPAI Makefile 使用说明"
+	@echo "=========================================="
+	@echo "可用目标:"
+	@echo "  make              - 编译多DCU版本 (默认)"
+	@echo "  make multi        - 编译多DCU版本"
+	@echo "  make single       - 编译单DCU版本"
+	@echo "  make both         - 编译单DCU和多DCU两个版本"
+	@echo "  make debug        - 编译调试版本"
+	@echo "  make clean        - 清理编译文件"
+	@echo "  make info         - 显示编译环境信息"
+	@echo "  make test         - 性能测试（1/2/4个DCU）"
+	@echo "  make verify       - 验证正确性（对比单/多DCU）"
+	@echo "  make help         - 显示此帮助"
+	@echo ""
+	@echo "编译选项:"
+	@echo "  GPU_ARCH=gfx906   - 指定GPU架构"
+	@echo "  DEBUG=1           - 启用调试模式"
+	@echo "  ROCM_PATH=/path   - 指定ROCm路径"
+	@echo ""
+	@echo "运行示例:"
+	@echo "  ./spai_multi_dcu      # 使用所有DCU"
+	@echo "  ./spai_multi_dcu 2    # 使用2个DCU"
+	@echo "  ./spai_multi_dcu 4    # 使用4个DCU"
+	@echo ""
+	@echo "环境变量:"
+	@echo "  export OMP_NUM_THREADS=4             # 设置OpenMP线程数"
+	@echo "  export HIP_VISIBLE_DEVICES=0,1,2     # 指定可见的DCU设备"
+	@echo ""
+	@echo "性能分析:"
+	@echo "  rocprof ./spai_multi_dcu"
+	@echo "=========================================="
+
+################################################################################
+# 高级目标
+################################################################################
+
+# 生成性能报告
+profile: spai_multi_dcu
+	@echo "运行性能分析..."
+	@if command -v rocprof >/dev/null 2>&1; then \
+		echo "circuit_2.mtx" | rocprof --stats ./spai_multi_dcu; \
+		echo "性能报告已生成"; \
+	else \
+		echo "错误: rocprof未找到"; \
+	fi
+
+# 检查DCU设备
+check-devices:
+	@echo "=========================================="
+	@echo "DCU设备检查"
+	@echo "=========================================="
+	@rocm-smi || echo "rocm-smi不可用"
+	@echo ""
+	@rocminfo | grep -E "Name:|Compute Unit:|Max Clock:" || echo "rocminfo不可用"
+	@echo "=========================================="
+
+# 运行示例
+run-example: spai_multi_dcu
+	@echo "运行示例 (2个DCU)..."
+	@if [ -f "circuit_2.mtx" ]; then \
+		echo "circuit_2.mtx" | ./spai_multi_dcu 2; \
+	else \
+		echo "错误: circuit_2.mtx 不存在"; \
+	fi

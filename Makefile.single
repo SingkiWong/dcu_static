@@ -36,6 +36,7 @@ HIPCC_FLAGS += -fopenmp
 HIPCC_FLAGS += -Wall -Wno-unused-result
 HIPCC_FLAGS += -DBICGSTAB_SUMMATION_BLOCK_SIZE=256
 HIPCC_FLAGS += -DBICGSTAB_THREADS_PER_BLOCK=256
+HIPCC_FLAGS += --gpu-max-threads-per-block=256
 
 # Include Paths
 INCLUDES := -I./common

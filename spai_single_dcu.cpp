@@ -2135,6 +2135,10 @@ float StaticSPAIv20(CSC_Matrix *devA, CSC_Matrix *devM) {
         hipEventDestroy(start);
         hipEventDestroy(stop);
 
+        CHECK_HIP_ERROR(hipMemset(dev_jPTR, 0, sizeof(int) * devA->nCol));
+        CHECK_HIP_ERROR(hipMemset(dev_iPTR, 0, sizeof(int) * devA->nCol));
+        CHECK_HIP_ERROR(hipMemset(dev_E, 0, sizeof(int) * devA->nCol));
+
         printf("---------------------find jIndex\n");
 
         hipEventCreate(&start);

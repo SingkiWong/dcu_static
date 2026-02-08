@@ -25,6 +25,7 @@ HIPCC_FLAGS += -fPIC
 
 # OpenMP支持（多DCU必需）
 HIPCC_FLAGS += -fopenmp
+HIPCC_FLAGS += --gpu-max-threads-per-block=256
 
 # 调试选项
 ifdef DEBUG

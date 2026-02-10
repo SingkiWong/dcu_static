@@ -1,5 +1,8 @@
 #include "hip/hip_runtime.h"
 #include <omp.h>
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
 #include <stdio.h>
 #include <iostream>
 #include <stdlib.h>
@@ -1348,47 +1351,96 @@ MultiDCU_Context* initMultiDCU(int requestedDCUs = -1) {
 // 列分割函数：将矩阵列分配给各个DCU
 //==============================================================================
 
-void distributeColumns(MultiDCU_Context *ctx, int totalCols) {
+void distributeColumns(MultiDCU_Context *ctx, const CSC_Matrix *hostA, int baseColStart, int baseColEnd) {
     if (!ctx || ctx->numDCUs <= 0) {
         printf("错误: 无效的上下文\n");
         return;
     }
 
+    if (!hostA) {
+        printf("错误: 无效的矩阵指针\n");
+        return;
+    }
+
+    int totalCols = baseColEnd - baseColStart;
     if (totalCols <= 0) {
         printf("错误: 总列数必须大于0\n");
         return;
     }
 
-    int colsPerDCU = totalCols / ctx->numDCUs;
-    int remainder = totalCols % ctx->numDCUs;
-
     printf("========================================\n");
     printf("列分配策略\n");
     printf("========================================\n");
     printf("总列数: %d\n", totalCols);
+    printf("列范围: [%d, %d)\n", baseColStart, baseColEnd);
     printf("DCU数量: %d\n", ctx->numDCUs);
-    printf("每DCU基础列数: %d\n", colsPerDCU);
-    printf("余数列: %d\n", remainder);
-    printf("----------------------------------------\n");
 
-    int currentCol = 0;
-    for (int i = 0; i < ctx->numDCUs; i++) {
-        ctx->colStart[i] = currentCol;
-        // 前面的DCU多分配一列（如果有余数）
-        int extraCol = (i < remainder) ? 1 : 0;
-        int colsForThisDCU = colsPerDCU + extraCol;
-        ctx->colEnd[i] = currentCol + colsForThisDCU;
-        currentCol = ctx->colEnd[i];
+    if (hostA->mPtr && hostA->nonzeroes > 0) {
+        int totalNnz = hostA->mPtr[baseColEnd] - hostA->mPtr[baseColStart];
+        int targetNnz = totalNnz / ctx->numDCUs;
+        printf("分配方式: 按非零元均衡\n");
+        printf("总非零元: %d\n", totalNnz);
+        printf("每DCU目标非零元: %d\n", targetNnz);
+        printf("----------------------------------------\n");
 
-        printf("DCU %d: 列 [%6d, %6d) = %6d 列 (%.1f%%)\n",
-               i, ctx->colStart[i], ctx->colEnd[i], colsForThisDCU,
-               100.0 * colsForThisDCU / totalCols);
+        int currentCol = 0;
+        for (int i = 0; i < ctx->numDCUs; i++) {
+            ctx->colStart[i] = baseColStart + currentCol;
+            int startCol = currentCol;
+            int accumulated = 0;
+
+            if (i == ctx->numDCUs - 1) {
+                currentCol = totalCols;
+            } else {
+                while (currentCol < totalCols) {
+                    int globalCol = baseColStart + currentCol;
+                    int colNnz = hostA->mPtr[globalCol + 1] - hostA->mPtr[globalCol];
+                    if (accumulated + colNnz > targetNnz && currentCol > startCol) {
+                        break;
+                    }
+                    accumulated += colNnz;
+                    currentCol++;
+                }
+            }
+
+            if (currentCol <= startCol) {
+                currentCol = (startCol + 1 <= totalCols) ? startCol + 1 : totalCols;
+            }
+
+            ctx->colEnd[i] = baseColStart + currentCol;
+            int colsForThisDCU = ctx->colEnd[i] - ctx->colStart[i];
+            int nnzForThisDCU = hostA->mPtr[ctx->colEnd[i]] - hostA->mPtr[ctx->colStart[i]];
+
+            printf("DCU %d: 列 [%6d, %6d) = %6d 列, %8d 非零元 (%.1f%% 列)\n",
+                   i, ctx->colStart[i], ctx->colEnd[i], colsForThisDCU, nnzForThisDCU,
+                   100.0 * colsForThisDCU / totalCols);
+        }
+    } else {
+        int colsPerDCU = totalCols / ctx->numDCUs;
+        int remainder = totalCols % ctx->numDCUs;
+        printf("分配方式: 均匀列数\n");
+        printf("每DCU基础列数: %d\n", colsPerDCU);
+        printf("余数列: %d\n", remainder);
+        printf("----------------------------------------\n");
+
+        int currentCol = 0;
+        for (int i = 0; i < ctx->numDCUs; i++) {
+            ctx->colStart[i] = baseColStart + currentCol;
+            int extraCol = (i < remainder) ? 1 : 0;
+            int colsForThisDCU = colsPerDCU + extraCol;
+            ctx->colEnd[i] = baseColStart + currentCol + colsForThisDCU;
+            currentCol += colsForThisDCU;
+
+            printf("DCU %d: 列 [%6d, %6d) = %6d 列 (%.1f%%)\n",
+                   i, ctx->colStart[i], ctx->colEnd[i], colsForThisDCU,
+                   100.0 * colsForThisDCU / totalCols);
+        }
     }
 
     // 验证分配
-    if (currentCol != totalCols) {
+    if (ctx->colEnd[ctx->numDCUs - 1] != baseColEnd) {
         printf("\n警告: 列分配不完整！分配了 %d 列，期望 %d 列\n",
-               currentCol, totalCols);
+               ctx->colEnd[ctx->numDCUs - 1], baseColEnd);
     }
 
     printf("========================================\n\n");
@@ -1744,7 +1796,7 @@ float StaticSPAIv20_ColumnRange(CSC_Matrix *devA, CSC_Matrix *devM,
             else if (n2max <= 16) Sol_SSPAIv10<16><<<blocksPerGrid, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
             else if (n2max <= 32) Sol_SSPAIv10<32><<<blocksPerGrid, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
             else if (n2max <= 64) Sol_SSPAIv10<64><<<blocksPerGrid, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
-            else if (n2max <= 128) Sol_SSPAIv10<128><<<blocksPerBlock, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
+            else if (n2max <= 128) Sol_SSPAIv10<128><<<blocksPerGrid, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
             else Sol_SSPAIv10<256><<<blocksPerGrid, threadsPerBlock>>>(dev_tildeA, dev_R, dev_X, dev_E, dev_jPTR, n1max, n2max, eGrid);
 
             if (n2max <= 2) modifyIndexAndData2_SSPAIv10<2><<<blocksPerGrid, threadsPerBlock>>>(dev_mTmpData, devA->mIndex, devA->mPtr, dev_X, dev_J, dev_jPTR, n2max, eGrid, sK);
@@ -1799,7 +1851,8 @@ float StaticSPAIv20_ColumnRange(CSC_Matrix *devA, CSC_Matrix *devM,
 // 每个DCU独立计算自己负责的列
 //==============================================================================
 
-float StaticSPAIv20_MultiDCU(MultiDCU_Context *ctx, CSC_Matrix *devCSC_M_global) {
+float StaticSPAIv20_MultiDCU(MultiDCU_Context *ctx, const CSC_Matrix *CSC_A, CSC_Matrix *devCSC_M_global,
+                             int baseColStart, int baseColEnd) {
     float totalTime = 0.0;
 
     printf("========================================\n");
@@ -1807,7 +1860,7 @@ float StaticSPAIv20_MultiDCU(MultiDCU_Context *ctx, CSC_Matrix *devCSC_M_global)
     printf("========================================\n");
 
     // 分配列给各个DCU
-    distributeColumns(ctx, ctx->devCSC_A[0]->nCol);
+    distributeColumns(ctx, CSC_A, baseColStart, baseColEnd);
 
     // 检查OpenMP线程数
     omp_set_num_threads(ctx->numDCUs);
@@ -2065,12 +2118,27 @@ void cleanupMultiDCU(MultiDCU_Context *ctx) {
 
 int main(int argc, char **argv) {
     char filename[256];
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+    int mpiRank = 0;
+    int mpiSize = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+#else
+    int mpiRank = 0;
+    int mpiSize = 1;
+#endif
 
-    cout << "========================================" << endl;
-    cout << "多DCU SPAI预条件子求解器" << endl;
-    cout << "========================================" << endl;
-    cout << "输入矩阵文件名 (例如: circuit_2.mtx):" << endl;
-    cin >> filename;
+    if (mpiRank == 0) {
+        cout << "========================================" << endl;
+        cout << "多DCU SPAI预条件子求解器" << endl;
+        cout << "========================================" << endl;
+        cout << "输入矩阵文件名 (例如: circuit_2.mtx):" << endl;
+        cin >> filename;
+    }
+#ifdef USE_MPI
+    MPI_Bcast(filename, sizeof(filename), MPI_CHAR, 0, MPI_COMM_WORLD);
+#endif
 
     // 读取矩阵
     CSC_Matrix *CSC_A = (CSC_Matrix*)malloc(sizeof(CSC_Matrix));
@@ -2112,9 +2180,14 @@ int main(int argc, char **argv) {
     hipEventElapsedTime(&elapsedTime, start, stop);
     printf("矩阵复制时间: %8.4f ms\n\n", elapsedTime);
 
+    // MPI下按列范围切分任务
+    int baseColStart = (CSC_A->nCol * mpiRank) / mpiSize;
+    int baseColEnd = (CSC_A->nCol * (mpiRank + 1)) / mpiSize;
+    printf("MPI Rank %d/%d: 列范围 [%d, %d)\n", mpiRank, mpiSize, baseColStart, baseColEnd);
+
     // 多DCU并行计算SPAI预条件子
     CSC_Matrix *devCSC_M_global = (CSC_Matrix*)malloc(sizeof(CSC_Matrix));
-    float preconditioningTime = StaticSPAIv20_MultiDCU(ctx, devCSC_M_global);
+    float preconditioningTime = StaticSPAIv20_MultiDCU(ctx, CSC_A, devCSC_M_global, baseColStart, baseColEnd);
 
     // 聚合结果
     aggregateResults(ctx, devCSC_M_global);
@@ -2154,5 +2227,8 @@ int main(int argc, char **argv) {
     printf("程序执行完成\n");
     printf("========================================\n");
 
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
     return EXIT_SUCCESS;
 }

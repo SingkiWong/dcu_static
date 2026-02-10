@@ -11,6 +11,12 @@
 #include "common/init.h"
 #include "common/assemble.h"
 #include "common/cuFormatConversion.h"
+#ifndef BICGSTAB_SUMMATION_BLOCK_SIZE
+#define BICGSTAB_SUMMATION_BLOCK_SIZE 256
+#endif
+#ifndef BICGSTAB_THREADS_PER_BLOCK
+#define BICGSTAB_THREADS_PER_BLOCK 256
+#endif
 #include "bicgstab/bicgstab_solver.h"
 
 using namespace std;
@@ -19,6 +25,14 @@ using namespace std;
     hipError_t err = hipGetLastError(); \
     if (err != hipSuccess) { \
         printf("Kernel '%s' failed: %s\n", stage, hipGetErrorString(err)); \
+        exit(EXIT_FAILURE); \
+    } \
+} while (0)
+
+#define CHECK_HIP_ERROR(call) do { \
+    hipError_t err = (call); \
+    if (err != hipSuccess) { \
+        printf("HIP error at %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(err)); \
         exit(EXIT_FAILURE); \
     } \
 } while (0)
@@ -1522,6 +1536,10 @@ float StaticSPAIv20(CSC_Matrix *devA, CSC_Matrix *devM) {
 
             printf("---------------------find jIndex\n");
 
+            CHECK_HIP_ERROR(hipMemset(dev_jPTR, 0, sizeof(int) * nCols));
+            CHECK_HIP_ERROR(hipMemset(dev_iPTR, 0, sizeof(int) * nCols));
+            CHECK_HIP_ERROR(hipMemset(dev_E, 0, sizeof(int) * nCols));
+
             hipEventCreate(&start);
             hipEventCreate(&stop);
             hipEventRecord(start, 0);
@@ -2124,6 +2142,10 @@ float StaticSPAIv20(CSC_Matrix *devA, CSC_Matrix *devM) {
 
         hipEventDestroy(start);
         hipEventDestroy(stop);
+
+        CHECK_HIP_ERROR(hipMemset(dev_jPTR, 0, sizeof(int) * devA->nCol));
+        CHECK_HIP_ERROR(hipMemset(dev_iPTR, 0, sizeof(int) * devA->nCol));
+        CHECK_HIP_ERROR(hipMemset(dev_E, 0, sizeof(int) * devA->nCol));
 
         printf("---------------------find jIndex\n");
 
